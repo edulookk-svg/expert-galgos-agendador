@@ -140,8 +140,10 @@ jobs:
           env -u GITHUB_STEP_SUMMARY node "$RUNNER_TEMP/cloud-app/collector/resume.mjs" >/dev/null
           node --input-type=module -e '
             import fs from "node:fs";
-            const state=JSON.parse(fs.readFileSync(process.env.GALGOS_WORK+"/run-status.json")).status;
+            const state=JSON.parse(fs.readFileSync(process.env.GALGOS_WORK+"/run-status.json"));
             const labels={checkpoint:"Retomada agendada",published:"Publicação concluída",verified:"Publicação conferida"};
-            if(!labels[state])throw Error("Estado inesperado");
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,labels[state]+"\n");
+            if(!labels[state.status])throw Error("Estado inesperado");
+            const remaining=state.status==="checkpoint" && Number.isSafeInteger(state.remaining) && state.remaining>=0;
+            const progress=remaining ? `\nPendências nesta etapa: ${state.remaining}\n` : "";
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,labels[state.status]+"\n"+progress);
           '
