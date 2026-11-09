@@ -1,0 +1,147 @@
+name: Atualização diária
+on:
+  schedule:
+    - cron: '15 0,1,6,8,9 * * *'
+  repository_dispatch:
+    types: [galgos-resume]
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Data opcional AAAA-MM-DD'
+        required: false
+        type: string
+      probe:
+        description: 'Testar runner sem iniciar a coleta'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+concurrency:
+  group: daily-collection
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirmar execução hospedada
+        run: echo 'Runner hospedado iniciado com sucesso.' >> "$GITHUB_STEP_SUMMARY"
+
+  collect:
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || !inputs.probe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 175
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Carregar coletor privado
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.GALGOS_PRIVATE_REPOSITORY }}
+          token: ${{ secrets.GALGOS_PUBLISH_TOKEN }}
+          path: private-source
+          persist-credentials: false
+      - name: Preparar execução
+        run: |
+          echo "GALGOS_WORK=$RUNNER_TEMP/collector-state" >> "$GITHUB_ENV"
+          unzip -q private-source/collector-source.zip -d "$RUNNER_TEMP/cloud-app"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --quiet curl_cffi==0.17.0
+      - name: Resolver data da coleta
+        id: day
+        env:
+          TARGET_DATE: ${{ inputs.date }}
+        run: node "$RUNNER_TEMP/cloud-app/collector/workflow-date.mjs" >/dev/null
+      - name: Restaurar cache criptografado do dia
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/checkpoint-day.enc
+          key: daily-sealed-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: daily-sealed-v1-${{ steps.day.outputs.date }}-
+      - name: Restaurar cache criptografado de históricos
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/checkpoint-shared.enc
+          key: shared-sealed-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: shared-sealed-v1-
+      - name: Validar checkpoints
+        id: restore
+        env:
+          DAY: ${{ steps.day.outputs.date }}
+          GALGOS_CHECKPOINT_KEY: ${{ secrets.GALGOS_CHECKPOINT_KEY }}
+        run: |
+          mkdir -p "$GALGOS_WORK/data/$DAY" "$GALGOS_WORK/shared"
+          for slot in day shared; do
+            case "$slot" in
+              day) scope="$DAY"; dest="$GALGOS_WORK/data/$DAY" ;;
+              shared) scope=shared; dest="$GALGOS_WORK/shared" ;;
+            esac
+            sealed="$RUNNER_TEMP/checkpoint-$slot.enc"
+            archive="$RUNNER_TEMP/checkpoint-$slot.tgz"
+            if [[ -f "$sealed" ]]; then
+              node bin/checkpoint.mjs open "$scope" "$sealed" "$archive"
+              tar -xzf "$archive" -C "$dest"
+            fi
+          done
+      - name: Coletar e publicar no repositório privado
+        env:
+          TARGET_DATE: ${{ steps.day.outputs.date }}
+          GALGOS_TRANSPORT: curl
+          PRIVATE_REPO: ${{ secrets.GALGOS_PRIVATE_REPOSITORY }}
+          PRIVATE_TOKEN: ${{ secrets.GALGOS_PUBLISH_TOKEN }}
+        run: |
+          env GITHUB_REPOSITORY="$PRIVATE_REPO" GITHUB_TOKEN="$PRIVATE_TOKEN" \
+            node "$RUNNER_TEMP/cloud-app/collector/run.mjs" \
+            >"$GALGOS_WORK/data/$TARGET_DATE/collector.log" 2>&1
+      - name: Criptografar checkpoints
+        id: seal
+        if: always() && steps.restore.outcome == 'success'
+        env:
+          DAY: ${{ steps.day.outputs.date }}
+          GALGOS_CHECKPOINT_KEY: ${{ secrets.GALGOS_CHECKPOINT_KEY }}
+        run: |
+          for slot in day shared; do
+            case "$slot" in
+              day) scope="$DAY"; source="$GALGOS_WORK/data/$DAY" ;;
+              shared) scope=shared; source="$GALGOS_WORK/shared" ;;
+            esac
+            archive="$RUNNER_TEMP/checkpoint-$slot.tgz"
+            tar -czf "$archive" -C "$source" .
+            node bin/checkpoint.mjs seal "$scope" "$archive" "$RUNNER_TEMP/checkpoint-$slot.enc"
+          done
+      - name: Salvar checkpoint criptografado do dia
+        if: always() && steps.seal.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/checkpoint-day.enc
+          key: daily-sealed-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Salvar cache criptografado de históricos
+        if: always() && steps.seal.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/checkpoint-shared.enc
+          key: shared-sealed-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Agendar próxima etapa se necessário
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          env -u GITHUB_STEP_SUMMARY node "$RUNNER_TEMP/cloud-app/collector/resume.mjs" >/dev/null
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const state=JSON.parse(fs.readFileSync(process.env.GALGOS_WORK+"/run-status.json")).status;
+            const labels={checkpoint:"Retomada agendada",published:"Publicação concluída",verified:"Publicação conferida"};
+            if(!labels[state])throw Error("Estado inesperado");
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,labels[state]+"\n");
+          '
