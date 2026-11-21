@@ -1,0 +1,62 @@
+services:
+  - type: web
+    name: expertgalgos
+    runtime: static
+    buildCommand: test -f render/index.html
+    staticPublishPath: ./render
+    headers:
+      - path: /api/galgos/*
+        name: Cache-Control
+        value: no-store
+      - path: /dashboard
+        name: Cache-Control
+        value: no-cache
+    routes:
+      - type: rewrite
+        source: /dashboard
+        destination: https://expert-galgos.beigehen512.chatgpt.site/dashboard
+      - type: rewrite
+        source: /app.js
+        destination: https://expert-galgos.beigehen512.chatgpt.site/app.js
+      - type: rewrite
+        source: /schedule-model.js
+        destination: https://expert-galgos.beigehen512.chatgpt.site/schedule-model.js
+      - type: rewrite
+        source: /racingpost-fields.js
+        destination: https://expert-galgos.beigehen512.chatgpt.site/racingpost-fields.js
+      - type: rewrite
+        source: /history-model.js
+        destination: https://expert-galgos.beigehen512.chatgpt.site/history-model.js
+      - type: rewrite
+        source: /replay-ui.js
+        destination: https://expert-galgos.beigehen512.chatgpt.site/replay-ui.js
+      - type: rewrite
+        source: /styles.css
+        destination: https://expert-galgos.beigehen512.chatgpt.site/styles.css
+      - type: rewrite
+        source: /racecard.css
+        destination: https://expert-galgos.beigehen512.chatgpt.site/racecard.css
+      - type: rewrite
+        source: /brand.css
+        destination: https://expert-galgos.beigehen512.chatgpt.site/brand.css
+      - type: rewrite
+        source: /replay.css
+        destination: https://expert-galgos.beigehen512.chatgpt.site/replay.css
+      - type: rewrite
+        source: /mobile.css
+        destination: https://expert-galgos.beigehen512.chatgpt.site/mobile.css
+      - type: rewrite
+        source: /expert-galgos-logo.jpg
+        destination: https://expert-galgos.beigehen512.chatgpt.site/expert-galgos-logo.jpg
+      - type: rewrite
+        source: /favicon.svg
+        destination: https://expert-galgos.beigehen512.chatgpt.site/favicon.svg
+      - type: rewrite
+        source: /vendor/*
+        destination: https://expert-galgos.beigehen512.chatgpt.site/vendor/*
+      - type: rewrite
+        source: /api/galgos/data/*
+        destination: https://expert-galgos.beigehen512.chatgpt.site/api/galgos/data/*
+      - type: rewrite
+        source: /api/galgos/replay
+        destination: https://expert-galgos.beigehen512.chatgpt.site/api/galgos/replay
