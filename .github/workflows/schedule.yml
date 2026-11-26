@@ -1,7 +1,15 @@
 name: Atualização diária
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/schedule.yml']
   schedule:
-    - cron: '15 0,1,6,8,9 * * *'
+    # America/Bahia: preparação 08:15 e 13:15, revisão noturna e conferência 06:00.
+    - cron: '15 11 * * *'
+    - cron: '15 16 * * *'
+    - cron: '15 0,1 * * *'
+    - cron: '15 6,8 * * *'
+    - cron: '0 9 * * *'
     - cron: '40 9 * * *'
   repository_dispatch:
     types: [galgos-resume]
@@ -86,20 +94,26 @@ jobs:
         id: day
         env:
           TARGET_DATE: ${{ inputs.date }}
+          GALGOS_SCHEDULE: ${{ github.event.schedule }}
+          PRIVATE_REPO: ${{ secrets.GALGOS_PRIVATE_REPOSITORY }}
+          PRIVATE_TOKEN: ${{ secrets.GALGOS_PUBLISH_TOKEN }}
         run: node "$RUNNER_TEMP/cloud-app/collector/workflow-date.mjs" >/dev/null
       - name: Restaurar cache criptografado do dia
+        if: steps.day.outputs.action != 'skip'
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/checkpoint-day.enc
           key: daily-sealed-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: daily-sealed-v1-${{ steps.day.outputs.date }}-
       - name: Restaurar cache criptografado de históricos
+        if: steps.day.outputs.action != 'skip'
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/checkpoint-shared.enc
           key: shared-sealed-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: shared-sealed-v1-
       - name: Validar checkpoints
+        if: steps.day.outputs.action != 'skip'
         id: restore
         env:
           DAY: ${{ steps.day.outputs.date }}
@@ -119,15 +133,26 @@ jobs:
             fi
           done
       - name: Coletar e publicar no repositório privado
+        if: steps.day.outputs.action != 'skip'
         env:
           TARGET_DATE: ${{ steps.day.outputs.date }}
           GALGOS_TRANSPORT: curl
+          GALGOS_REVIEW_TODAY: ${{ github.event_name == 'schedule' && github.event.schedule == '0 9 * * *' && '1' || '' }}
           PRIVATE_REPO: ${{ secrets.GALGOS_PRIVATE_REPOSITORY }}
           PRIVATE_TOKEN: ${{ secrets.GALGOS_PUBLISH_TOKEN }}
         run: |
           env GITHUB_REPOSITORY="$PRIVATE_REPO" GITHUB_TOKEN="$PRIVATE_TOKEN" \
             node "$RUNNER_TEMP/cloud-app/collector/run.mjs" \
             >"$GALGOS_WORK/data/$TARGET_DATE/collector.log" 2>&1
+      - name: Compartilhar fichas antecipadas já coletadas
+        if: steps.day.outputs.action != 'skip' && steps.restore.outcome == 'success'
+        continue-on-error: true
+        env:
+          TARGET_DATE: ${{ steps.day.outputs.date }}
+          PRIVATE_REPO: ${{ secrets.GALGOS_PRIVATE_REPOSITORY }}
+          PRIVATE_TOKEN: ${{ secrets.GALGOS_PUBLISH_TOKEN }}
+        run: |
+          if [ -f bin/advance-cache.mjs ]; then node bin/advance-cache.mjs; fi
       - name: Criptografar checkpoints
         id: seal
         if: always() && steps.restore.outcome == 'success'
@@ -157,6 +182,7 @@ jobs:
           path: ${{ runner.temp }}/checkpoint-shared.enc
           key: shared-sealed-v1-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Agendar próxima etapa se necessário
+        if: steps.day.outputs.action != 'skip'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -164,9 +190,11 @@ jobs:
           node --input-type=module -e '
             import fs from "node:fs";
             const state=JSON.parse(fs.readFileSync(process.env.GALGOS_WORK+"/run-status.json"));
-            const labels={checkpoint:"Retomada agendada",published:"Publicação concluída",verified:"Publicação conferida"};
+            const labels={checkpoint:"Retomada agendada",published:"Publicação concluída",verified:"Publicação conferida",superseded:"Etapa anterior já concluída"};
             if(!labels[state.status])throw Error("Estado inesperado");
             const remaining=state.status==="checkpoint" && Number.isSafeInteger(state.remaining) && state.remaining>=0;
             const progress=remaining ? `\nPendências nesta etapa: ${state.remaining}\n` : "";
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,labels[state.status]+"\n"+progress);
+            const diff=state.changes;
+            const changes=diff ? `Corridas incluídas: ${diff.added}, removidas: ${diff.removed}, alteradas: ${diff.changed}.\n` : "";
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,labels[state.status]+"\n"+progress+changes);
           '
