@@ -43,6 +43,7 @@ export async function readCheckpoint(work, date) {
 // Merge a checkpoint with the previously saved cards for this track. Parallel
 // bootstraps and resumed jobs may have received different races from the source.
 export function mergeCheckpoint(date, name, fresh, previousText) {
+  if (previousText && JSON.parse(previousText).date > date) return previousText;
   const prior = previousText ? decode(date,previousText) : {};
   if (name === 'index') return encode(date, prior.at > fresh.at ? prior : fresh);
   const cards = {...prior};
